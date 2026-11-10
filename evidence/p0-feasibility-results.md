@@ -47,11 +47,22 @@ Missing sub-product and sub-issue values may be structurally valid and should no
 
 ## 4. Date relationship quality
 
+- Missing `date_received`: 0
+- Malformed `date_received`: 0
+- Missing `date_sent_to_company`: 0
+- Malformed `date_sent_to_company`: 0
 - Records where `date_sent_to_company` is earlier than `date_received`: 7,050
+- Valid date pairs for routing analysis: 19,021,289
+- Excluded date pairs: 7,050
+- Average routing days among valid pairs: approximately 0.585 days
 
 Interpretation:
 
-These rows should be investigated before calculating a derived days-to-send measure. They should not be silently removed without a documented Curated-layer rule.
+Both date fields are complete and parse successfully in the selected extract. However, 7,050 complaints have a sent-to-company date earlier than the received date.
+
+These complaints should remain in the complaint fact because the date issue does not invalidate the complaint itself. For a future routing-days measure, the invalid pairs should be flagged and the derived routing-days value should be left null rather than converted to zero or an absolute value.
+
+The valid and excluded date-pair counts reconcile to the full source row count.
 
 ## 5. Submission channels
 
