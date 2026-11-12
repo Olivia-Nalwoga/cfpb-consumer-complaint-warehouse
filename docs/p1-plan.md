@@ -73,4 +73,106 @@ The observed results support the proposed transaction grain.
 The reproducible grain check is stored in:
 
 [`sql/01_source_profile.sql`](../sql/01_source_profile.sql)
+## 2. Define the model and predict a history consequence
 
+### Business process and fact-table type
+
+The warehouse models the **receipt and handling of published CFPB consumer complaints**.
+
+The principal fact table will be `fact_complaint`, using a **transaction fact** design. The complaint grain established and tested in Section 1 will be carried forward into the dimensional model.
+
+This design allows individual complaints to be summarized by time, classification, company, geography, and submission channel while preserving the meaning of one complaint per fact row.
+
+### Proposed dimensional model
+
+The proposed warehouse uses a star schema centered on `fact_complaint`.
+
+The principal dimensions are:
+
+| Table | One row represents | Main purpose |
+| --- | --- | --- |
+| `dim_date` | One calendar date | Supports monthly and yearly analysis and will be used in received-date and sent-to-company-date roles |
+| `dim_classification` | One distinct original CFPB product, sub-product, issue, and sub-issue combination | Preserves the classification originally associated with each complaint |
+| `dim_company` | One source company identity or label | Supports complaint and response analysis by company |
+| `dim_geography` | One source geography combination | Supports analysis by state and available ZIP geography |
+| `dim_channel` | One submission channel | Supports comparison of Web, Phone, Referral, Postal mail, Fax, and Email complaints |
+
+`fact_complaint` will connect each complaint to the appropriate dimension rows through warehouse keys.
+
+The original CFPB classification hierarchy will remain together in `dim_classification` because the meaning of an issue or sub-issue can depend on its product and sub-product context.
+
+The dimensional model is shown below:
+
+![CFPB Consumer Complaint Warehouse dimensional model](model.png)
+
+
+### Key strategy
+
+`complaint_id` will remain the source business identifier in `fact_complaint`.
+
+Each dimension will use a stable warehouse surrogate key:
+
+- `date_key`
+- `classification_key`
+- `company_key`
+- `geography_key`
+- `channel_key`
+
+These keys will appear as foreign keys in `fact_complaint`.
+
+`dim_date` will be role-playing, using:
+
+- `received_date_key`
+- `sent_date_key`
+
+The primary trend analysis will use `received_date_key`.
+
+### Measures
+
+The fact table will store complaint-level measures and flags that can be aggregated in the Serving layer.
+
+| Field | Meaning |
+| --- | --- |
+| `complaint_count` | 1 for each complaint |
+| `late_response_flag` | 1 when `timely_response = 'No'`, otherwise 0 for eligible Yes/No responses |
+| `eligible_response_flag` | 1 when `timely_response` is Yes or No |
+| `days_to_forward` | Days from CFPB receipt to company transmission for valid date pairs |
+| `date_quality_status` | Indicates whether the date pair is valid for routing analysis |
+
+The Serving layer will calculate:
+
+**late-response rate = late-response count / eligible-response count**
+
+Invalid routing-date pairs will remain in the complaint fact but will have a null `days_to_forward` value.
+
+### Question-to-model trace
+
+| Question component | Model element |
+| --- | --- |
+| Monthly complaint volume | `SUM(complaint_count)` from `fact_complaint` |
+| Time | `received_date_key` joined to `dim_date`, grouped by completed month |
+| Comparable product groups | `dim_classification` plus the documented reporting mapping |
+| Late-response rate | `SUM(late_response_flag) / SUM(eligible_response_flag)` |
+| Investigation detail | Company and geography dimensions can be used to drill into unusual product-group patterns |
+
+The primary question will therefore be answered by grouping complaint facts by received month and comparable reporting product group, then comparing monthly complaint counts over time. The supporting late-response question will use the same grouping and calculate the late-response rate from the complaint-level flags.
+
+### History and shared-meaning decision
+
+The original CFPB product, sub-product, issue, and sub-issue values will be treated as fixed source history and preserved in `dim_classification`.
+
+A separate versioned reporting mapping will be used when historically different source labels need to be grouped into a comparable reporting category.
+
+For example, the April 2017 CFPB change moved vehicle-related classifications from `Consumer Loan` into the new `Vehicle loan or lease` product. CFPB documentation shows the legacy-to-new relationship, while the source profile shows both old and new classifications appearing during the transition period.
+
+Because of this overlap, complaints will not be reassigned based only on date. The reporting mapping will use the original classification values and documented source evidence.
+
+Type 2 history is not planned for this classification dimension because the source already preserves the classification originally reported for each complaint. The historical reporting need is better handled through a separate versioned crosswalk.
+### P3 behavior to test
+
+By P3, I will test the 2017 vehicle-classification boundary by comparing:
+
+- monthly complaint counts using the original CFPB product labels, and
+- monthly complaint counts using the comparable reporting group.
+
+The test should show that the original-label view is split across old and new product names, while the mapped view produces one continuous reporting category without changing the total number of complaint facts.
