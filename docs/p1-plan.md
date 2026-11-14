@@ -56,6 +56,12 @@ The source field expected to uniquely identify one complaint is:
 
 **One row represents one published consumer complaint in the selected CFPB extract.**
 
+### Expected grain-check result
+
+- Source rows: 19,028,339
+- Rows with missing complaint ID: 0
+- Repeated complaint ID groups: 0
+
 ### Observed grain-check result
 
 The grain check returned:
@@ -80,8 +86,6 @@ The reproducible grain check is stored in:
 The warehouse models the **receipt and handling of published CFPB consumer complaints**.
 
 The principal fact table will be `fact_complaint`, using a **transaction fact** design. The complaint grain established and tested in Section 1 will be carried forward into the dimensional model.
-
-This design allows individual complaints to be summarized by time, classification, company, geography, and submission channel while preserving the meaning of one complaint per fact row.
 
 ### Proposed dimensional model
 
@@ -159,20 +163,59 @@ The primary question will therefore be answered by grouping complaint facts by r
 
 ### History and shared-meaning decision
 
-The original CFPB product, sub-product, issue, and sub-issue values will be treated as fixed source history and preserved in `dim_classification`.
+Original CFPB product, sub-product, issue, and sub-issue values will be preserved in `dim_classification`.
 
-A separate versioned reporting mapping will be used when historically different source labels need to be grouped into a comparable reporting category.
+A separate versioned reporting mapping will be used when historically different labels need to be grouped into a comparable reporting category.
 
-For example, the April 2017 CFPB change moved vehicle-related classifications from `Consumer Loan` into the new `Vehicle loan or lease` product. CFPB documentation shows the legacy-to-new relationship, while the source profile shows both old and new classifications appearing during the transition period.
+Because the 2017 source profile shows both legacy and newer vehicle classifications during the transition, complaints will not be reassigned based only on date.
 
-Because of this overlap, complaints will not be reassigned based only on date. The reporting mapping will use the original classification values and documented source evidence.
+Without the reporting mapping, part of a taxonomy change could appear as a change in complaint activity even when the difference is partly caused by the classification structure itself.
 
-Type 2 history is not planned for this classification dimension because the source already preserves the classification originally reported for each complaint. The historical reporting need is better handled through a separate versioned crosswalk.
+Type 2 history is not planned for this dimension because the source already preserves the classification originally reported for each complaint.
+
 ### P3 behavior to test
 
-By P3, I will test the 2017 vehicle-classification boundary by comparing:
+By P3, I will compare monthly vehicle complaint counts using original CFPB labels versus the comparable reporting group.
 
-- monthly complaint counts using the original CFPB product labels, and
-- monthly complaint counts using the comparable reporting group.
+The mapped result should produce one comparable trend without changing the total number of complaint facts.
 
-The test should show that the original-label view is split across old and new product names, while the mapped view produces one continuous reporting category without changing the total number of complaint facts.
+## 3. Plan the build and its checks
+
+### Layer plan and run order
+
+| Layer | Planned object | Purpose |
+| --- | --- | --- |
+| Raw | `cfpb_raw.complaints_raw` | Preserve the source extract as loaded from CFPB |
+| Curated | `cfpb_curated.complaints_curated` | Parse dates, standardize blanks, preserve original classifications, and create quality flags |
+| Warehouse | `cfpb_dw` fact and dimensions | Build the star schema and reporting crosswalk |
+| Serving | `cfpb_serving.monthly_product_response` | Provide monthly complaint counts and late-response rates for analysis |
+
+Preliminary run order:
+
+1. Validate the Raw extract.
+2. Build the Curated complaint table.
+3. Build dimensions and the reporting mapping.
+4. Build `fact_complaint`.
+5. Run reconciliation checks.
+6. Build the Serving output.
+
+A same-input rerun should leave the final fact count and Serving results unchanged.
+
+### Field-to-output trace
+
+`timely_response` will be preserved from the source, standardized in Curated, converted into `late_response_flag` and `eligible_response_flag` in the fact table, and aggregated in Serving to calculate the late-response rate.
+
+### Planned quality checks
+
+| Risk | Planned check | Expected result | Where checked |
+| --- | --- | --- | --- |
+| Join fanout or duplicate complaint facts | Verify `complaint_id` remains unique and complaint counts do not increase after dimension and mapping joins | Fact count remains equal to the Curated complaint count and `complaint_id` remains unique | Warehouse validation SQL in BigQuery |
+| Historical mapping changes reporting meaning | Require one reporting-map row per classification and mapping version, count unmapped classifications, and compare mapped versus original-label trends | No complaint multiplication; unresolved classifications remain visible | Warehouse/Serving validation SQL in BigQuery |
+
+### Access and ownership
+
+The traced field, `timely_response`, comes from the public CFPB Consumer Complaint Database and is low-risk for this class project.
+
+The intended user is the compliance or customer-operations manager defined in Section 1. For this project, I am the warehouse owner and steward of the transformation logic, while CFPB is the source provider.
+
+The raw `timely_response` value does not need to appear in the main audience output; the Serving layer will present the derived late-response count, eligible-response count, and late-response rate.
